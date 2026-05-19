@@ -387,8 +387,13 @@
     try {
       items = await fetchAllNonArchivedItems(accountId, (n) => {
         countEl.textContent = `Loaded ${n.toLocaleString()} items`;
-      });
+      }, controller.signal);
     } catch (e) {
+      if (e.name === 'AbortError' || aborted) {
+        statusEl.textContent = 'Stopped during item discovery.';
+        finalize('failed');
+        return;
+      }
       console.error('[QRT] Item discovery failed:', e);
       statusEl.textContent = `Discovery failed: ${e.message}`;
       finalize('failed');
@@ -413,7 +418,8 @@
     statusEl.textContent = `Recalculating ${items.length.toLocaleString()} items…`;
     setGifState('running', 0);
     const failed = [];
-    let skipped = 0;
+    let succeeded = 0;
+    let lastProcessed = 0;
 
     await processInParallel(items, async (item) => {
       if (aborted) return { success: false, aborted: true, id: item.itemID };
@@ -425,20 +431,20 @@
       return { success: true, id: item.itemID };
     }, {
       concurrency: 2,
+      signal: controller.signal,
       onProgress: (done, total, result) => {
+        lastProcessed = done;
         countEl.textContent = `${done.toLocaleString()} / ${total.toLocaleString()}`;
         setGifState('running', done);
-        if (result && !result.success) {
-          if (result.aborted) skipped++;
-          else if (result.id) failed.push(String(result.id));
-        }
+        if (result && result.success) succeeded++;
+        else if (result && !result.success && !result.aborted && result.id) failed.push(String(result.id));
       }
     });
 
     // Step 3: report
-    const succeeded = items.length - failed.length - skipped;
+    const skipped = items.length - succeeded - failed.length;
     statusEl.textContent = aborted
-      ? `Stopped. ${succeeded} recalc'd, ${failed.length} failed, ${skipped} skipped.`
+      ? `Stopped at ${lastProcessed.toLocaleString()} / ${items.length.toLocaleString()}. ${succeeded} recalc'd, ${failed.length} failed, ${skipped} skipped.`
       : `Done. ${succeeded} recalc'd, ${failed.length} failed.`;
     finalize(aborted || succeeded === 0 ? 'failed' : 'done');
 
